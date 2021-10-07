@@ -1,10 +1,7 @@
-import hashlib
-import json
+import copy
 import logging
-import os
 
 from ckan_datapackage_tools import converter
-from dataflows import schema_validator
 from dataflows.processors.dumpers.file_dumper import FileDumper
 from datapackage import DataPackage
 from tableschema_ckan_datastore import Storage
@@ -15,217 +12,152 @@ from ..helpers import get_ckan_error, make_ckan_request
 log = logging.getLogger(__name__)
 
 
+CKAN_PACKAGE_CORE_PROPERTIES = {
+    'title': '',
+    'version': '',
+    'state': 'active',
+    'url': '',
+    'notes': '',
+    'license_id': '',
+    'author': '',
+    'author_email': '',
+    'maintainer': '',
+    'maintainer_email': '',
+    'owner_org': None,
+    'private': False,
+}
+
+CKAN_RESOURCE_CORE_PROPERTIES = {
+    'package_id': None,
+    'url': None,
+    'url_type': 'upload',
+    'name': None,
+    'hash': None,
+}
+
+
 class CkanDumper(FileDumper):
-    def initialize(
+    def __init__(
         self,
         host,
         api_key,
-        push_resources_to_datastore=False,
+        owner_org,
+        overwrite_existing_data=True,
+        push_to_datastore=False,
         push_to_datastore_method='insert',
-        dataset_properties={},
+        **options,
     ):
-        super().initialize()
-
+        super().__init__(options)
         self.api_path = '/api/3/action'
         self.host = host
+        self.owner_org = owner_org
         self.base_endpoint = f'{self.host}{self.api_path}'
         self.package_create_endpoint = f'{self.base_endpoint}/package_create'
         self.package_update_endpoint = f'{self.base_endpoint}/package_update'
         self.resource_create_endpoint = f'{self.base_endpoint}/resource_create'
-
+        self.overwrite_existing_data = overwrite_existing_data
         self.api_key = api_key
-        self.push_resources_to_datastore = push_resources_to_datastore
+        self.ckan_dataset = copy.deepcopy(CKAN_PACKAGE_CORE_PROPERTIES)
+        self.ckan_dataset['owner_org'] = self.owner_org
+        self.push_to_datastore = push_to_datastore
         self.push_to_datastore_method = push_to_datastore_method
 
-        self.dataset_properties = dataset_properties
-        self.dataset_resources = []
-        self.dataset_id = None
+    def get_iterator(self, datastream):
+        # I don't see a clean way to ensure creating a CKAN package before resources
+        # as iterating over files does not give the datapackage.json first (which would provide one convention-based way).
+        # So, this is the 'cleanest' method I can override AFAIK (less clean: self._process) where I can access
+        # self.datapackage to get the data I need to create a CKAN package before processing resources.
+        self.write_ckan_dataset()
+        return super().get_iterator(datastream)
 
-        datastore_methods = ['insert', 'upsert', 'update']
+    def write_file_to_output(self, filename, path):
+        # this is a hack so we don't have to re-implement all of
+        # rows_processor just to use this method.
+        res_path = path.lstrip('./')
+        is_datapackage_descriptor = res_path == 'datapackage.json'
+        if is_datapackage_descriptor:
+            descriptor = self.datapackage.descriptor
+        else:
+            matches = [r for r in self.datapackage.resources if r.descriptor['path'] == res_path]
+            assert len(matches) == 1
+            descriptor = matches[0].descriptor
+        # end hack
 
-        if self.push_to_datastore_method not in datastore_methods:
-            raise RuntimeError(
-                f'push_to_datastore_method must be one of {", ".join(datastore_methods)}'
-            )
+        ckan_resource = copy.deepcopy(CKAN_RESOURCE_CORE_PROPERTIES)
+        ckan_resource['package_id'] = self.ckan_dataset['id']
+        ckan_resource['name'] = descriptor['name']
+        ckan_resource['url'] = res_path
+        # TODO - only packages have hash in the datastream?
+        ckan_resource['hash'] = descriptor.get('hash', '')
+        ckan_resource['encoding'] = 'utf-8' if descriptor else descriptor['encoding']
+        ckan_resource['format'] = 'json' if is_datapackage_descriptor else descriptor['format']
 
-    def handle_resources(self, datapackage, resource_iterator, parameters, stats):
-        '''
-        This method handles most of the control flow for creating
-        dataset/resources on ckan.
-
-        First we handle the dataset creation, then, if successful, we
-        create each resource.
-        '''
-
-        # Calculate datapackage hash
-        if self.datapackage_hash:
-            datapackage_hash = hashlib.md5(
-                json.dumps(datapackage, sort_keys=True, ensure_ascii=True).encode('ascii')
-            ).hexdigest()
-            self.set_attr(datapackage, self.datapackage_hash, datapackage_hash)
-
-        # Handle the datapackage first!
-        self.handle_datapackage(datapackage, parameters, stats)
-
-        # Handle non-streaming resources
-        for resource in datapackage['resources']:
-            if not resource.get('dpp:streaming', False):
-                resource_metadata = {
-                    'package_id': self.__dataset_id,
-                    'url': resource['dpp:streamedFrom'],
-                    'name': resource['name'],
-                }
-                if 'format' in resource:
-                    resource_metadata.update({'format': resource['format']})
-                request_params = {'json': resource_metadata}
-
-                self._create_ckan_resource(request_params)
-
-        # Handle each resource in resource_iterator
-        for resource in resource_iterator:
-            resource_spec = resource.spec
-            ret = self.handle_resource(
-                schema_validator(resource), resource_spec, parameters, datapackage
-            )
-            ret = self.row_counter(datapackage, resource_spec, ret)
-            yield ret
-
-        stats['count_of_rows'] = self.get_attr(datapackage, self.datapackage_rowcount)
-        stats['bytes'] = self.get_attr(datapackage, self.datapackage_bytes)
-        stats['hash'] = self.get_attr(datapackage, self.datapackage_hash)
-        stats['dataset_name'] = datapackage['name']
-
-    def handle_datapackage(self, datapackage, parameters, stats):
-        '''Create or update a ckan dataset from datapackage and parameters'''
-
-        # core dataset properties
-        dataset = {
-            'title': '',
-            'version': '',
-            'state': 'active',
-            'url': '',
-            'notes': '',
-            'license_id': '',
-            'author': '',
-            'author_email': '',
-            'maintainer': '',
-            'maintainer_email': '',
-            'owner_org': None,
-            'private': False,
-        }
-
-        dp = DataPackage(datapackage)
-        dataset.update(converter.datapackage_to_dataset(dp))
-
-        self.dataset_resources = dataset.get('resources', [])
-        if self.dataset_resources:
-            del dataset['resources']
-
-        # Merge dataset-properties from parameters into dataset.
-        dataset.update(self.dataset_properties) if self.dataset_properties else None
-
-        response = make_ckan_request(
-            self.package_create_endpoint, method='POST', json=dataset, api_key=self.api_key
+        ckan_files = {'upload': (res_path, open(filename, 'rb'))}
+        response = self.create_or_update_ckan_data(
+            'resource', data=ckan_resource, files=ckan_files
         )
+        if self.push_to_datastore and not is_datapackage_descriptor:
+            self.push_resource_to_datastore(
+                filename,
+                response['id'],
+                descriptor['schema'],
+            )
+        return response
 
-        ckan_error = get_ckan_error(response)
-        if (
-            ckan_error
-            and parameters.get('overwrite_existing')
-            and 'That URL is already in use.' in ckan_error.get('name', [])
-        ):
+    def push_resource_to_datastore(self, filename, ckan_resource_id, resource_schema):
+        storage = Storage(
+            base_url=self.base_endpoint,
+            dataset_id=self.ckan_dataset['id'],
+            api_key=self.api_key,
+        )
+        storage.create(ckan_resource_id, resource_schema)
+        storage.write(
+            ckan_resource_id,
+            Stream(filename, format='csv').open(),
+            method=self.push_to_datastore_method,
+        )
+        return True
 
-            log.info('CKAN dataset with url already exists. ' 'Attempting package_update.')
+    def write_ckan_dataset(self):
+        self.ckan_dataset.update(converter.datapackage_to_dataset(self.datapackage))
+        # we deal with resource metadata mapping later
+        # based on the ported implementation so following here
+        del self.ckan_dataset['resources']
+        response = self.create_or_update_ckan_data(
+            'package',
+            json=self.ckan_dataset,
+            method='POST',
+        )
+        # we will get back the ID
+        self.ckan_dataset = response['result']
+        return self.ckan_dataset
+
+    def create_or_update_ckan_data(self, entity, method='POST', json=None, data=None, files=None):
+        {'endpoint'}
+        response = make_ckan_request(
+            getattr(self, f'{entity}_create_endpoint'),
+            method=method,
+            json=json,
+            data=data,
+            files=None,
+            api_key=self.api_key,
+        )
+        error = get_ckan_error(response)
+        # in ported code, there was another check for type of error based on the message
+        # but it break with i18n so just assuming every error lets us overwrite.
+        if error and self.overwrite_existing_data is True:
             response = make_ckan_request(
-                self.package_update_endpoint,
-                method='POST',
-                json=dataset,
+                getattr(self, f'{entity}_update_endpoint'),
+                method=method,
+                json=json,
+                data=data,
+                files=None,
                 api_key=self.api_key,
             )
-            ckan_error = get_ckan_error(response)
-
-        if ckan_error:
-            log.exception('CKAN returned an error: ' + json.dumps(ckan_error))
-            raise Exception
-
-        if response['success']:
-            self.dataset_id = response['result']['id']
-
-    def rows_processor(self, resource, spec, temp_file, writer, fields, datapackage):
-        file_formatter = self.file_formatters[spec['name']]
-        for row in resource:
-            file_formatter.write_row(writer, row, fields)
-            yield row
-        file_formatter.finalize_file(writer)
-
-        # File size:
-        filesize = temp_file.tell()
-        self.inc_attr(datapackage, self.datapackage_bytes, filesize)
-        self.inc_attr(spec, self.resource_bytes, filesize)
-
-        # File Hash:
-        if self.resource_hash:
-            temp_file.seek(0)
-            hasher = hashlib.md5()
-            data = 'x'
-            while len(data) > 0:
-                data = temp_file.read(1024)
-                hasher.update(data.encode('utf8'))
-            self.set_attr(spec, self.resource_hash, hasher.hexdigest())
-
-        # Finalise
-        filename = temp_file.name
-        temp_file.close()
-
-        resource_metadata = {
-            'package_id': self.dataset_id,
-            'url': 'url',
-            'url_type': 'upload',
-            'name': spec['name'],
-            'hash': spec['hash'],
-        }
-        resource_metadata.update({'encoding': spec['encoding']}) if 'encoding' in spec else None
-        resource_metadata.update({'format': spec['format']}) if 'format' in spec else None
-        ckan_filename = os.path.basename(spec['path'])
-        resource_files = {'upload': (ckan_filename, open(temp_file.name, 'rb'))}
-        request_params = {'data': resource_metadata, 'files': resource_files}
-        try:
-            # Create the CKAN resource
-            create_result = self._create_ckan_resource(request_params)
-            if self.push_to_datastore:
-                # Create the DataStore resource
-                storage = Storage(
-                    base_url=self.base_endpoint,
-                    dataset_id=self.dataset_id,
-                    api_key=self.api_key,
-                )
-                resource_id = create_result['id']
-                storage.create(resource_id, spec['schema'])
-                storage.write(
-                    resource_id,
-                    Stream(temp_file.name, format='csv').open(),
-                    method=self.push_to_datastore_method,
-                )
-        except Exception as e:
-            raise e
-        finally:
-            os.unlink(filename)
-
-    def _create_ckan_resource(self, request_params):
-        create_response = make_ckan_request(
-            self.resource_create_endpoint,
-            api_key=self.api_key,
-            method='POST',
-            **request_params,
-        )
-
-        ckan_error = get_ckan_error(create_response)
-        if ckan_error:
-            log.exception(
-                'CKAN returned an error when creating ' 'a resource: ' + json.dumps(ckan_error)
-            )
-            raise Exception
-        return create_response['result']
+            error = get_ckan_error(response)
+        if error:
+            raise Exception(f'{json.dumps(error)}')
+        return response
 
 
 if __name__ == '__main__':
