@@ -133,7 +133,6 @@ class CkanDumper(FileDumper):
         return self.ckan_dataset
 
     def create_or_update_ckan_data(self, entity, method='POST', json=None, data=None, files=None):
-        {'endpoint'}
         response = make_ckan_request(
             getattr(self, f'{entity}_create_endpoint'),
             method=method,

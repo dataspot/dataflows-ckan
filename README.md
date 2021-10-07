@@ -15,7 +15,6 @@ Dataflows processors to work with CKAN.
     - [Examples](#examples)
   - [Documentation](#documentation)
     - [dump_to_s3](#dump_to_s3)
-    - [change_acl_on_s3](#change_acl_on_s3)
   - [Contributing](#contributing)
   - [Changelog](#changelog)
 
@@ -39,12 +38,13 @@ These processors have to be used as a part of data flow. For example:
 flow = Flow(
     load('data/data.csv'),
     dump_to_ckan(
-      host,
-      api_key,
-      overwrite_existing=True,
-      push_resources_to_datastore=True,
-      push_resources_to_datastore_method='insert',
-      dataset_properties={},
+        host,
+        api_key,
+        owner_org,
+        overwrite_existing_data=True,
+        push_to_datastore=False,
+        push_to_datastore_method='insert',
+        **options,
     ),
 )
 flow.process()
