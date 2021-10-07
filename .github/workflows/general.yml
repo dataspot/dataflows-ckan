@@ -50,5 +50,5 @@ jobs:
         run: make build
       - name: Publish to PYPI
         run: make publish
-        with:
+        env:
           PYPI_API_KEY: ${{ secrets.PYPI_API_KEY }}
