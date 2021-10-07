@@ -80,6 +80,10 @@ $ make format
 
 ## Changelog
 
-#### v0.1.0
+### 0.2.0
+
+- Full port to dataflows, and some refactoring, with a basic integration test.
+
+#### 0.1.0
 
 - an initial port from https://github.com/frictionlessdata/datapackage-pipelines-ckan based on the great work of @brew and @amercader
