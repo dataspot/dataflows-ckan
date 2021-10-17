@@ -1,5 +1,6 @@
 import copy
 import logging
+import json as json_module
 
 from ckan_datapackage_tools import converter
 from dataflows.base.resource_wrapper import ResourceWrapper
@@ -168,7 +169,7 @@ class CkanDumper(FileDumper):
             )
             error = get_ckan_error(response)
         if error:
-            raise Exception(f'{json.dumps(error)}')
+            raise Exception(f'{json_module.dumps(error)}')
         return response
 
 
