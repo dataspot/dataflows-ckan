@@ -2,8 +2,8 @@ import copy
 import logging
 
 from ckan_datapackage_tools import converter
+from dataflows.base.resource_wrapper import ResourceWrapper
 from dataflows.processors.dumpers.file_dumper import FileDumper
-from datapackage import DataPackage
 from tableschema_ckan_datastore import Storage
 from tabulator import Stream
 
@@ -62,13 +62,10 @@ class CkanDumper(FileDumper):
         self.push_to_datastore = push_to_datastore
         self.push_to_datastore_method = push_to_datastore_method
 
-    def get_iterator(self, datastream):
-        # I don't see a clean way to ensure creating a CKAN package before resources
-        # as iterating over files does not give the datapackage.json first (which would provide one convention-based way).
-        # So, this is the 'cleanest' method I can override AFAIK (less clean: self._process) where I can access
-        # self.datapackage to get the data I need to create a CKAN package before processing resources.
-        self.write_ckan_dataset()
-        return super().get_iterator(datastream)
+    def process_datapackage(self, datapackage):
+        datapackage = super().process_datapackage(datapackage)
+        self.write_ckan_dataset(datapackage)
+        return datapackage
 
     def write_file_to_output(self, filename, path):
         # this is a hack so we don't have to re-implement all of
@@ -84,6 +81,9 @@ class CkanDumper(FileDumper):
         # end hack
 
         ckan_resource = copy.deepcopy(CKAN_RESOURCE_CORE_PROPERTIES)
+        resource_id = [r['id'] for r in self.ckan_dataset['resources'] if r['name'] == descriptor['name']]
+        if len(resource_id) == 1:
+            ckan_resource['id'] = resource_id[0]
         ckan_resource['package_id'] = self.ckan_dataset['id']
         ckan_resource['name'] = descriptor['name']
         ckan_resource['url'] = res_path
@@ -93,33 +93,36 @@ class CkanDumper(FileDumper):
         ckan_resource['format'] = 'json' if is_datapackage_descriptor else descriptor['format']
 
         ckan_files = {'upload': (res_path, open(filename, 'rb'))}
-        response = self.create_or_update_ckan_data(
+        self.create_or_update_ckan_data(
             'resource', data=ckan_resource, files=ckan_files
         )
-        if self.push_to_datastore and not is_datapackage_descriptor:
-            self.push_resource_to_datastore(
-                filename,
-                response['id'],
-                descriptor['schema'],
-            )
-        return response
 
-    def push_resource_to_datastore(self, filename, ckan_resource_id, resource_schema):
+    def rows_processor(self, resource: ResourceWrapper, writer, temp_file):
+        stream = super().rows_processor(resource, writer, temp_file)
+        if self.push_to_datastore:
+            schema = resource.res.schema.descriptor
+            resource_id = [r['id'] for r in self.ckan_dataset['resources'] if r['name'] == resource.res.name]
+            if len(resource_id) == 1:
+                yield from self.push_resource_to_datastore(stream, resource_id[0], schema)
+                return
+        yield from stream
+
+    def push_resource_to_datastore(self, rows, ckan_resource_id, resource_schema):
         storage = Storage(
             base_url=self.base_endpoint,
             dataset_id=self.ckan_dataset['id'],
             api_key=self.api_key,
         )
         storage.create(ckan_resource_id, resource_schema)
-        storage.write(
+        yield from storage.write(
             ckan_resource_id,
-            Stream(filename, format='csv').open(),
+            rows,
             method=self.push_to_datastore_method,
+            as_generator=True,
         )
-        return True
 
-    def write_ckan_dataset(self):
-        self.ckan_dataset.update(converter.datapackage_to_dataset(self.datapackage))
+    def write_ckan_dataset(self, datapackage):
+        self.ckan_dataset.update(converter.datapackage_to_dataset(datapackage))
         # we deal with resource metadata mapping later
         # based on the ported implementation so following here
         del self.ckan_dataset['resources']
@@ -130,6 +133,16 @@ class CkanDumper(FileDumper):
         )
         # we will get back the ID
         self.ckan_dataset = response['result']
+        existing_names = [r['name'] for r in self.ckan_dataset['resources']]
+        for resource in datapackage.resources:
+            name = resource.name
+            if name not in existing_names:
+                response = self.create_or_update_ckan_data(
+                    'resource',
+                    json=dict(package_id=self.ckan_dataset['id'], name=name),
+                    method='POST',
+                )
+                self.ckan_dataset['resources'].append(response['result'])
         return self.ckan_dataset
 
     def create_or_update_ckan_data(self, entity, method='POST', json=None, data=None, files=None):
@@ -138,7 +151,7 @@ class CkanDumper(FileDumper):
             method=method,
             json=json,
             data=data,
-            files=None,
+            files=files,
             api_key=self.api_key,
         )
         error = get_ckan_error(response)
@@ -150,7 +163,7 @@ class CkanDumper(FileDumper):
                 method=method,
                 json=json,
                 data=data,
-                files=None,
+                files=files,
                 api_key=self.api_key,
             )
             error = get_ckan_error(response)
