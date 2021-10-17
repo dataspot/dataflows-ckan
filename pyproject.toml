@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dataflows-ckan"
-version = "0.3.0"
+version = "0.3.1"
 description = "CKAN integration for Dataflows."
 authors = ["Paul Walsh <paul@walsh.co.il>", "Adam Kariv <adam.kariv@gmail.com>"]
 license = "MIT"

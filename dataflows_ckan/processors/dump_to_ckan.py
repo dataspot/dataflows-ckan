@@ -158,6 +158,7 @@ class CkanDumper(FileDumper):
         error = get_ckan_error(response)
         # in ported code, there was another check for type of error based on the message
         # but it break with i18n so just assuming every error lets us overwrite.
+        update_error = None
         if error and self.overwrite_existing_data is True:
             response = make_ckan_request(
                 getattr(self, f'{entity}_update_endpoint'),
@@ -167,8 +168,9 @@ class CkanDumper(FileDumper):
                 files=files,
                 api_key=self.api_key,
             )
-            error = get_ckan_error(response)
-        if error:
+            update_error = get_ckan_error(response)
+        if update_error is not None:
+            # the more intersting error is the create error
             raise Exception(f'{json_module.dumps(error)}')
         return response
 
