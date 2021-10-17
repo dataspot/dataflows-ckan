@@ -55,6 +55,7 @@ class CkanDumper(FileDumper):
         self.package_create_endpoint = f'{self.base_endpoint}/package_create'
         self.package_update_endpoint = f'{self.base_endpoint}/package_update'
         self.resource_create_endpoint = f'{self.base_endpoint}/resource_create'
+        self.package_show_endpoint = f'{self.base_endpoint}/package_show'
         self.overwrite_existing_data = overwrite_existing_data
         self.api_key = api_key
         self.ckan_dataset = copy.deepcopy(CKAN_PACKAGE_CORE_PROPERTIES)
@@ -124,10 +125,11 @@ class CkanDumper(FileDumper):
         )
 
     def write_ckan_dataset(self, datapackage):
-        self.ckan_dataset.update(converter.datapackage_to_dataset(datapackage))
-        # we deal with resource metadata mapping later
-        # based on the ported implementation so following here
-        del self.ckan_dataset['resources']
+        self.ckan_dataset.update(self.get_ckan_package(datapackage))
+        dataset = converter.datapackage_to_dataset(datapackage)
+        # We don't want to overwrite the existing dataset resources
+        dataset.pop('resources', None)
+        self.ckan_dataset.update(dataset)
         response = self.create_or_update_ckan_data(
             'package',
             json=self.ckan_dataset,
@@ -175,6 +177,17 @@ class CkanDumper(FileDumper):
             raise Exception(f'{json_module.dumps(error)}')
         return response
 
+    def get_ckan_package(self, datapackage):
+        response = make_ckan_request(
+            self.package_show_endpoint,
+            method='GET',
+            params=dict(id=datapackage.descriptor['name']),
+            api_key=self.api_key,
+        )
+        error = get_ckan_error(response)
+        if error:
+            return dict()
+        return response['result']
 
 if __name__ == '__main__':
     CkanDumper()()
