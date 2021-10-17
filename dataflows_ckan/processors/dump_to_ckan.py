@@ -6,7 +6,6 @@ from ckan_datapackage_tools import converter
 from dataflows.base.resource_wrapper import ResourceWrapper
 from dataflows.processors.dumpers.file_dumper import FileDumper
 from tableschema_ckan_datastore import Storage
-from tabulator import Stream
 
 from ..helpers import get_ckan_error, make_ckan_request
 
@@ -35,7 +34,7 @@ CKAN_RESOURCE_CORE_PROPERTIES = {
     'name': None,
     'hash': None,
 }
-
+DESCRIPTOR_RESOURCE_NAME = 'datapackage_json'
 
 class CkanDumper(FileDumper):
     def __init__(
@@ -75,18 +74,20 @@ class CkanDumper(FileDumper):
         is_datapackage_descriptor = res_path == 'datapackage.json'
         if is_datapackage_descriptor:
             descriptor = self.datapackage.descriptor
+            resource_name = DESCRIPTOR_RESOURCE_NAME
         else:
             matches = [r for r in self.datapackage.resources if r.descriptor['path'] == res_path]
             assert len(matches) == 1
             descriptor = matches[0].descriptor
+            resource_name = descriptor['name']
         # end hack
 
         ckan_resource = copy.deepcopy(CKAN_RESOURCE_CORE_PROPERTIES)
-        resource_id = [r['id'] for r in self.ckan_dataset['resources'] if r['name'] == descriptor['name']]
+        resource_id = [r['id'] for r in self.ckan_dataset['resources'] if r['name'] == resource_name]
         if len(resource_id) == 1:
             ckan_resource['id'] = resource_id[0]
         ckan_resource['package_id'] = self.ckan_dataset['id']
-        ckan_resource['name'] = descriptor['name']
+        ckan_resource['name'] = resource_name
         ckan_resource['url'] = res_path
         # TODO - only packages have hash in the datastream?
         ckan_resource['hash'] = descriptor.get('hash', '')
