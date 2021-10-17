@@ -103,9 +103,9 @@ class CkanDumper(FileDumper):
             schema = resource.res.schema.descriptor
             resource_id = [r['id'] for r in self.ckan_dataset['resources'] if r['name'] == resource.res.name]
             if len(resource_id) == 1:
-                self.push_resource_to_datastore(stream, resource_id[0], schema)
-        else:
-            yield from stream
+                yield from self.push_resource_to_datastore(stream, resource_id[0], schema)
+                return
+        yield from stream
 
     def push_resource_to_datastore(self, rows, ckan_resource_id, resource_schema):
         storage = Storage(
@@ -114,12 +114,12 @@ class CkanDumper(FileDumper):
             api_key=self.api_key,
         )
         storage.create(ckan_resource_id, resource_schema)
-        storage.write(
+        yield from storage.write(
             ckan_resource_id,
             rows,
             method=self.push_to_datastore_method,
+            as_generator=True,
         )
-        return True
 
     def write_ckan_dataset(self, datapackage):
         self.ckan_dataset.update(converter.datapackage_to_dataset(datapackage))
