@@ -948,7 +948,7 @@ develop = ["mock", "pylama", "pytest", "pytest-cov"]
 
 [[package]]
 name = "tableschema-ckan-datastore"
-version = "1.1.0"
+version = "1.1.1"
 description = "Generate CKAN DataStore tables, load and extract data, based on Table Schema descriptors."
 category = "main"
 optional = false
