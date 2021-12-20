@@ -9,7 +9,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.7"
 ckan-datapackage-tools = "^0.1.0"
-tableschema-ckan-datastore = { url = "https://github.com/frictionlessdata/tableschema-ckan-datastore-py/archive/refs/heads/main.zip" }
+tableschema-ckan-datastore = "^1.1.1"
 datapackage = "^1.15.2"
 dataflows = "^0.3.3"
 
