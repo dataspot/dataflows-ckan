@@ -26,7 +26,7 @@ def make_ckan_request(url, method='GET', headers=None, api_key=None, **kwargs):
     try:
         return response.json()
     except json.decoder.JSONDecodeError:
-        log.error('Expected JSON in response from: {}'.format(url))
+        log.error('Expected JSON in response from: {}\nGot {}:\n{}'.format(url, response.status_code, response.text[:400]))
         raise
 
 
